@@ -1,3 +1,4 @@
 # LiquidBounce Scripts
-Scripts for LiquidBounce scripts
-;)
+Scripts for LiquidBounce client
+
+Made this because I was bored.
