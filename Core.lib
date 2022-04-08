@@ -1,0 +1,638 @@
+//Core - Simple, yet powerful ScriptAPI base
+
+//coreVersion = "4.0"
+var Core = {
+    version: "4.0",
+    API_V2: typeof _AdaptedModule == "undefined"
+}, module, command, scriptName, scriptVersion, scriptAuthor;
+
+/*-------------*/
+/* Module core */
+/*-------------*/
+
+function registerModule(m) {
+    if (!Object.keys(m).length) return;
+
+    var settings = {}; toArray(m.values).forEach(function (v) { settings[v.getName()] = !Core.API_V2 && v instanceof _AdaptedValue ? v.getValue() : v });
+    script.registerModule({
+        name: m.name || script.scriptName,
+        category: Core.categories.add(m.category || "Core"),
+        description: m.description || "",
+        settings: settings
+    }, function (module) {
+        m.module = module;
+        m.reflectorModule = new Reflector(module);
+        m.onEnable && module.on("enable", function () m.onEnable());
+        m.onDisable && module.on("disable", function () m.onDisable());
+        m.onUpdate && module.on("update", function () m.onUpdate());
+        m.onMotion && module.on("motion", function (e) m.onMotion(e));
+        m.onRender2D && module.on("render2D", function (e) m.onRender2D(e));
+        m.onRender3D && module.on("render3D", function (e) m.onRender3D(e));
+        m.onAttack && module.on("attack", function (e) m.onAttack(e));
+        m.onJump && module.on("jump", function (e) m.onJump(e));
+        m.onPacket && module.on("packet", function (e) m.onPacket(e));
+        m.onKey && module.on("key", function (e) m.onKey(e));
+        m.onMove && module.on("move", function (e) m.onMove(e));
+        m.onStep && module.on("step", function (e) m.onStep(e));
+        m.onStepConfirm && module.on("stepConfirm", function () m.onStepConfirm());
+        m.onWorld && module.on("world", function (e) m.onWorld(e));
+        m.onSession && module.on("session", function () m.onSession());
+        m.onClickBlock && module.on("clickBlock", function (e) m.onClickBlock(e));
+        m.onStrafe && module.on("strafe", function (e) m.onStrafe(e));
+        m.onSlowDown && module.on("slowDown", function (e) m.onSlowDown(e));
+        m.onClickGuiOpen && module.on("clickGuiOpen", function () m.onClickGuiOpen());
+        m.onClickGuiClosed && module.on("clickGuiClosed", function () m.onClickGuiClosed());
+        m.onClickGuiLoaded && module.on("clickGuiLoaded", function () m.onClickGuiLoaded());
+
+        for each (var key in Object.keys(Core.artificialEvents)) m[key] && hookEvent(m, key);
+    });
+}
+
+function hookEvent(m, key) {
+    var eventClass = Core.artificialEvents[key].class,
+        listener = new (Java.extend(Listenable, Consumer, { 
+            handleEvents: function() { return m.module.state }, 
+            accept: function(e) {
+                m[key](e)
+            }
+        })),
+        targets = Core.eventManager.registry.getOrDefault(eventClass, new ArrayList());
+
+    targets.add(new EventHook(listener, getMethod(listener, "accept"), Core.defaultAnnotation));
+    Core.eventManager.registry[eventClass] = targets;
+
+    //Registering event in ScriptModule's events HashMap to make them callable via callEvent() function.
+    m.reflectorModule.events.put(key[2].toLowerCase() + key.substring(3) /*onClientShutdown -> clientShutdown, ...*/, m[key]);
+}
+
+/*--------------*/
+/* Command core */
+/*--------------*/
+
+function registerCommand(c) {
+    if (!Object.keys(c).length) return;
+
+    var aliases = toArray(c.aliases || script.scriptName).toLowerCase();
+    script.registerCommand({
+        name: aliases[0],
+        aliases: aliases
+    }, function (command) {
+        command.on("execute", function (args) {
+            args = Java.from(args);
+            var formattedArgs = args.toLowerCase(), scope = c, scopePos = 0, parameters = [];
+            formattedArgs[0] = "handler";
+
+            for each (var arg in formattedArgs) {
+                var scopeArray = toArray(scope);
+                var found = scopeArray.find(function (e) e.hasOwnProperty(arg));
+
+                if (found) {
+                    scope = found[arg];
+                    scopePos++;
+
+                    var scopeArray = toArray(scope);
+                    var objects = scopeArray.filter(function (e) isObject(e));
+                    var scopeSubcommands = objects.map(function (o) Object.keys(o)).flat();
+
+                    if (scopeSubcommands.includes(formattedArgs[scopePos])) continue
+
+                    var functions = scopeArray.filter(function (e) e instanceof Function).sort(function (a, b) getFunctionParameters(b).length - getFunctionParameters(a).length);
+                    if (functions.length) {
+                        for each (func in functions) {
+                            var parameters = getFunctionParameters(func);
+                            if (scopePos + parameters.length <= args.length) return func.apply(null, args.slice(scopePos));
+                        }
+                        parameters = functions.map(function (func) getFunctionParameters(func));
+                        break
+                    }
+                } else {
+                    args = args.slice(0, formattedArgs.indexOf(arg));
+                    print("§4▏ §c§lInvalid subcommand§4:");
+                    print("§4▏§c", args.join(" "), "„§4§l" + arg + "§c“");
+                    break
+                }
+            }
+            
+            if (args.length == 1) {
+                print("§8▏§7§l", c.name || script.scriptName, "§8v§l" + (c.version || script.scriptVersion), "§7by§8§l", toArray(c.author || Java.from(script.scriptAuthors)).join("§7, §8§l"));
+                if (c.aliases.length > 1) {
+                    print("§8▏ §7§lAvailable aliases§8: (§7§l" + c.aliases.length + "§8)");
+                    print("§8▏ §f" + c.aliases.map(function (alias) LiquidBounce.commandManager.prefix + alias).join("§7, §f"));
+                }
+            }
+            var subcommands = Array.isArray(scope) ? scope.filter(function (e) isObject(e)).map(function (o) Object.keys(o)).flat() : Object.keys(scope);
+            if (subcommands.length && scopePos == args.length) {
+                print("§8▏ §7§lValid subcommand" + (subcommands.length > 1 ? "s" : "") + "§8: (§7§l" + subcommands.length + "§8)");
+                print("§8▏§f", args.join(" "), "§8[§f" + subcommands.join("§7, §f") + "§8]");
+            }
+            if (parameters.length) {
+                print("§8▏ §7§lRequired parameters§8: (§7§l" + parameters.map(function (params) params.length).join("§8/§7§l") + "§8)");
+                for each (params in parameters) print("§8▏§f", args.join(" "), "„§7" + params.slice(args.length - scopePos).map(function (param) param.replaceAll("_", " ")).join("§f“ „§7") + "§f“");
+            }
+        });
+    });
+}
+
+/*-------------------*/
+/* Utility functions */
+/*-------------------*/
+
+function isMovingHorizontally(entity) entity && entity != mc.thePlayer ? entity.lastTickPosX != entity.posX || entity.lastTickPosZ != entity.posZ : !!(mc.thePlayer.movementInput.moveForward || mc.thePlayer.movementInput.moveStrafe);
+
+function isMovingVertically(entity) entity && entity != mc.thePlayer ? entity.lastTickPosY != entity.posY : mc.thePlayer.movementInput.jump || mc.thePlayer.movementInput.sneak;
+
+function isMoving(entity) isMovingHorizontally(entity) || isMovingVertically(entity);
+
+function isInputHorizontally() Keyboard.isKeyDown(mc.gameSettings.keyBindForward.getKeyCode()) || Keyboard.isKeyDown(mc.gameSettings.keyBindLeft.getKeyCode()) || Keyboard.isKeyDown(mc.gameSettings.keyBindBack.getKeyCode()) || Keyboard.isKeyDown(mc.gameSettings.keyBindRight.getKeyCode());
+
+function isInputVertically(jumpOnly) Keyboard.isKeyDown(mc.gameSettings.keyBindJump.getKeyCode()) || (!jumpOnly && Keyboard.isKeyDown(mc.gameSettings.keyBindSneak.getKeyCode()));
+
+function move(horizontal, vertical, timer, event, ignoreInput) {
+    horizontal = ignoreInput ? horizontal : isInputHorizontally() ? horizontal : 0;
+    vertical = ignoreInput ? vertical : isInputHorizontally() ? vertical : null;
+    yaw = MovementUtils.getDirection();
+    timer != null && timer > 0 && (mc.timer.timerSpeed = timer);
+    horizontal != null && ((mc.thePlayer.motionX = -Math.sin(yaw) * horizontal, mc.thePlayer.motionZ = Math.cos(yaw) * horizontal), (event && (event.setX(mc.thePlayer.motionX), event.setZ(mc.thePlayer.motionZ))));
+    vertical != null && ((mc.thePlayer.motionY = vertical), (event && event.setY(vertical)));
+}
+
+function interval(ms, func, _timer) (_timer = new Timer("setInterval", true), _timer.schedule(func, 0, ms), _timer);
+
+function timeout(ms, func, _timer) (_timer = new Timer("setTimeout", true), _timer.schedule(func, ms), _timer);
+
+function setValues(module, values) {
+    if (!(module instanceof ScriptModule)) return
+    var valuesMap = new LinkedHashMap();
+    toArray(values).forEach(function (v, i) valuesMap.put(i, v instanceof Value ? v : v.getValue()));
+    getField(module, "_values").set(module, valuesMap);
+    LiquidBounce.fileManager.saveConfig(LiquidBounce.fileManager.valuesConfig);
+}
+
+function getValues(module) Java.from(module.values);
+
+function getNearestTarget(entityType, fromEntity, _entity) Java.from(mc.theWorld.loadedEntityList).filter(function (e) e != mc.thePlayer && entityType ? e instanceof entityType : EntityUtils.isSelected(e, true)).sort(function (a, b) (_entity = fromEntity || mc.thePlayer).getDistanceToEntity(a) - _entity.getDistanceToEntity(b))[0];
+
+function getPlayer(nick) Java.from(mc.theWorld.playerEntities).find(function (e) StringUtils.stripControlCodes(e.getName()).equals(nick));
+
+function rand(min, max) (Array.isArray(min) && (max = min[1], min = min[0]), Math.random() * (max - min) + min);
+
+function getDurability(stack) stack && stack.getMaxDamage() - stack.getItemDamage();
+
+function getAttackDamage(stack, _item) stack && (_item = stack.getItem()) && (_item instanceof ItemSword || _item instanceof ItemTool) ? Java.from(_item.getItemAttributeModifiers().get("generic.attackDamage"))[0].getAmount() + 1.25 * ItemUtils.getEnchantment(stack, Enchantment.sharpness) : -1;
+
+function getBreakingSpeed(stack, block, _item) stack && (_item = stack.getItem()) && (_item instanceof ItemTool) ? _item.getStrVsBlock(stack, block) : 1;
+
+print = (Chat = chat = { print: function () { ClientUtils.displayChatMessage(Array.prototype.slice.call(arguments).join(" ")) } }).print;
+
+function showMessage(text, title, alwaysOnTop, type, _dialog)
+    new Thread(function () {
+        (_dialog = new JOptionPane(text || "", type || JOptionPane.INFORMATION_MESSAGE).createDialog(title || "")).setAlwaysOnTop(alwaysOnTop != null ? alwaysOnTop : true);
+        _dialog.setVisible(true);
+    }).start();
+
+function getMethod(clazz, name, _method) ((_method = Java.from((clazz instanceof Class ? clazz : clazz.class).getDeclaredMethods()).find(function (m) m.getName() == name)) && _method.setAccessible(true), _method);
+
+function getField(clazz, name, _field) ((_field = getFields(clazz instanceof Class ? clazz : clazz.class).find(function (f) f.getName() == name)) && _field.setAccessible(true), _field);
+
+function getFields(clazz) {
+    var _fields = Java.from((clazz = clazz instanceof Class ? clazz : clazz.class).getDeclaredFields());
+    while (clazz = clazz.superclass) _fields = _fields.concat(Java.from(clazz.getDeclaredFields()));
+    return _fields;
+}
+
+function getMethods(clazz) {
+    var _methods = Java.from((clazz = clazz instanceof Class ? clazz : clazz.class).getDeclaredMethods());
+    while (clazz = clazz.superclass) _methods = _methods.concat(Java.from(clazz.getDeclaredMethods()));
+    return _methods;
+}
+
+function getConstructor(clazz, index, _constructor) ((_constructor = (clazz instanceof Class ? clazz : clazz.class).getDeclaredConstructors()[index]).setAccessible(true), _constructor);
+
+function importPackage() Array.prototype.slice.call(arguments).forEach(function (e) Core.classes.filter(function (c) c.name.startsWith(e) && !c.name.contains("$")).forEach(function (c) eval(c.simpleName + "=StaticClass.forClass(c)")));
+
+function openFolder(folder) Desktop.open(folder);
+
+function toArray(object) (Array.isArray(object) ? object : [object]).filter(Boolean);
+
+function isObject(object) object && object.constructor === Object;
+
+function canStep(stepHeight, predictDistance) {
+    if (mc.thePlayer.isCollidedHorizontally || predictDistance) {
+        var yaw = MovementUtils.getDirection(), bb = mc.thePlayer.getEntityBoundingBox(), possiblePlaces = [], otherBB, predictDistance = predictDistance || 0.01;
+        for (var i = 0; (i += 0.125) <= stepHeight;) {
+            if (!mc.theWorld.getCollidingBoundingBoxes(mc.thePlayer, bb.offset(0, i, 0)).isEmpty()) break
+            if (mc.theWorld.getCollidingBoundingBoxes(mc.thePlayer, otherBB = bb.offset(-Math.sin(yaw) * predictDistance, i, Math.cos(yaw) * predictDistance)).isEmpty() && !mc.theWorld.getCollidingBoundingBoxes(mc.thePlayer, otherBB.offset(0, -0.125, 0)).isEmpty()) possiblePlaces.push(i);
+        }
+        return possiblePlaces.length && Math.max.apply(null, possiblePlaces);
+    }
+}
+
+function callEvent(name, args) scriptManager.scripts.forEach(function (s) Java.from(_registeredModulesField.get(s)).forEach(function (m) _callEventMethod.invoke(m, name, args)));
+
+function playSound(name, pitch) mc.getSoundHandler().playSound(PositionedSoundRecord.create(new ResourceLocation(name), pitch || 1));
+
+function sendPacket(packet, triggerEvent) {
+    var networkManager = mc.getNetHandler().getNetworkManager();
+    if (triggerEvent) networkManager.sendPacket(packet);
+    else if (networkManager.isChannelOpen()) {
+        _flushOutboundQueueMethod.invoke(networkManager);
+        _dispatchPacketMethod.invoke(networkManager, packet, null);
+    } else {
+        _readWriteLockField.get(networkManager).writeLock().lock();
+        try {
+            _outboundPackets = _outboundPacketsQueueField.get(networkManager);
+            _outboundPackets.add(new NetworkManager.InboundHandlerTuplePacketListener(packet, null));
+            _outboundPacketsQueueField.set(networkManager, _outboundPackets);
+        } finally {
+            _readWriteLockField.get(networkManager).writeLock().unlock();
+        }
+    }
+}
+
+function getSRGName(clazz, name, map) {
+    clazz = clazz instanceof Class ? clazz : clazz.class;
+    if (map.containsKey(clazz.name)) {
+        for each (var entry in map.get(clazz.name).entrySet()) {
+            if (entry.getValue() == name) return entry.getKey().split("(")[0];
+        }
+    }
+    return name;
+}
+
+function getFunctionParameters(func) {
+    if (func instanceof Function) {
+        var match = func.toString().match(/function.*\((.*)\)/)[1];
+        if (match.length) return match.replaceAll(" ", "").split(",")
+    }
+    return []
+}
+
+//Downloads GitHub directory.
+//Uses GitHub's API URL (for example https://api.github.com/repos/CzechHek/Core/contents/Scripts)
+function downloadDirectory(url, destination, onSuccess, onFailure) {
+    new Thread(function () {
+        try {
+            if (!(url instanceof URL)) url = new URL(url);
+            if (!(destination instanceof File)) destination = new File(destination);
+    
+            var json = JSON.parse(HttpUtils.get(url));
+            for each (var info in json) {
+                if (info.type == "file") HttpUtils.download(info.download_url, new File(destination, info.name));
+                else downloadDirectory(info.url, new File(destination, info.name));
+            }
+
+            onSuccess instanceof Function && onSuccess();
+        } catch (e) {
+            (onFailure instanceof Function ? onFailure : print)(e);
+        }
+    }).start();
+}
+
+
+/*----------------------*/
+/* Class-like functions */
+/*----------------------*/
+
+function EditableEnum(target) {
+    getField(Field, "modifiers").setInt(values = getField(target, "$VALUES"), values.getModifiers() & ~Modifier.FINAL);
+    var accessor = getMethod(Constructor, "acquireConstructorAccessor").invoke(getConstructor(target, 0)), a;
+
+    this.add = function (name) (!(a = this.values()).some(function (v) v.getDisplayName().equalsIgnoreCase(name)) && values.set(null, Java.to(a.concat(accessor.newInstance([name.toUpperCase(), 0, name])), "net.ccbluex.liquidbounce.features.module.ModuleCategory[]")), name);
+    this.remove = function (name) (this.values().some(function (v, i, a) v.getDisplayName().equalsIgnoreCase(name) && (a.splice(i, 1), !values.set(null, Java.to(a, "net.ccbluex.liquidbounce.features.module.ModuleCategory[]")))), name);
+    this.get = function () target;
+    this.values = function () Java.from(values.get(null));
+}
+
+function Reflector(object) object instanceof java.lang.Object ? 
+    new JSAdapter() {
+        __get__: function (name) {
+            return (_field = getField(object, getSRGName(object, name, _remapperFields))) ? new Reflector(_field.get(object)) : object[name];
+        },
+        __put__: function (name, value) {
+            return (_field = getField(object, getSRGName(object, name, _remapperFields))) && _field.set(object, value);
+        },
+        __call__: function (name) {
+            return name == "toString" ? object.toString() : name == "valueOf" ? object : (_method = getMethod(object, getSRGName(object, name, _remapperMethods))) && _method.invoke(object, Java.to(Array.prototype.slice.call(arguments, 1), "java.lang.Object[]"));
+        }
+    } : object;
+
+function TextEditor(file) file instanceof File && (file.createNewFile(), 
+    new JSAdapter() {
+        __get__: function (name) {
+            switch (name) {
+                case "text": return FileUtils.readFileToString(file)
+                case "file": return file
+            }
+        },
+        __put__: function (name, value) {
+            switch (name) {
+                case "text":
+                    FileUtils.writeStringToFile(file, value);
+                    return value
+                case "file": return file = value
+            }
+        },
+        __call__: function (name, value) {
+            switch (name) {
+                case "toString":
+                case "valueOf":
+                case "getText": return this.text
+                case "setText": return this.text = value
+                case "getFile": return file
+                case "setFile": return file = value
+            }
+        }
+    })
+
+value = {
+    createBlock: function (name, value) {
+        return new BlockValue(name, value)
+    },
+    createBoolean: function (name, value) {
+        return new BoolValue(name, value)
+    },
+    createFloat: function (name, value, min, max) {
+        return new FloatValue(name, value, min, max)
+    },
+    createFont: function (name, value) {
+        return new FontValue(name, value)
+    },
+    createInteger: function (name, value, min, max) {
+        return new IntegerValue(name, value, min, max)
+    },
+    createList: function (name, values, value) {
+        return new ListValue(name, values, value)
+    },
+    createText: function (name, value) {
+        return new TextValue(name, value)
+    }
+}
+
+/*-------------------*/
+/* Object extensions */
+/*-------------------*/
+
+//array.shuffle([boolean]) - randomizes elements order, overwrites and returns the array
+//parameters: boolean - optional; false -> doesn't shuffle
+Object.defineProperty(Array.prototype, "shuffle", {
+    writable: true,
+    value: function (bool) {
+        var i = this.length, j, t;
+        if (bool === false || !i) return this;
+        while (--i) {
+            j = ~~(Math.random() * (i + 1)), 
+            t = this.i;
+            this.i = this.j;
+            this.j = t;
+        } return this;
+    }
+});
+
+//Array.find(function, [boolean]) - finds first element that fullfills a condition, returns the element or index of the element
+//parameters: function - defines the condition, boolean - optional; true -> returns index
+Object.defineProperty(Array.prototype, "find", {
+    value: function (func, returnIndex) {
+        for (var i in this) if (func(this[i], i, this)) return returnIndex ? +i : this[i];
+        return returnIndex ? -1 : null;
+    }
+});
+
+//Array.includes(element) - checks if array has element, returns boolean
+//parameters: element - element of the array to check for
+Object.defineProperty(Array.prototype, "includes", {
+    value: function (element) {
+        return this.indexOf(element) != -1;
+    }
+});
+
+//String.includes(string, [boolean]) - checks if string contains other string, case sensitive / insensitive, returns boolean
+//parameters: string - string to check for, boolean - optional; true -> case insensitive search
+Object.defineProperty(String.prototype, "includes", {
+    value: function (string, ignoreCase) {
+        return ignoreCase ? this.toString().toLowerCase().contains(string.toLowerCase()) : this.toString().contains(string);
+    }
+});
+
+//Array.remove(element) - removes element from array, returns if successful
+//parameters: element - element to remove
+Object.defineProperty(Array.prototype, "remove", {
+    value: function (element) {
+        var index;
+        return !!(~(index = this.indexOf(element)) && this.splice(index, 1));
+    }
+});
+
+//Array.last() - returns last element of array
+Object.defineProperty(Array.prototype, "last", {
+    value: function () {
+        return this[this.length - 1];
+    }
+});
+
+//Array.random([from: int], [to: int]) - returns a random element (between optional boundaries)
+//parameters: from - minimal index, optional; to - maximal index, optional
+Object.defineProperty(Array.prototype, "random", {
+    value: function (from, to) {
+        if (this.length > 0) {
+            var index = Math.floor(rand(from || 0, (to + 1) || this.length));
+            return this[index];
+        } else return null;
+    }
+});
+
+//Array.toLowerCase() - clones an array, all it's elements will be lowercase
+Object.defineProperty(Array.prototype, "toLowerCase", {
+    value: function () {
+        return this.map(function (element) element.toLowerCase());
+    }
+});
+
+//Array.flat() - https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array/flat
+Object.defineProperty(Array.prototype, "flat", {
+    value: function () {
+        return Array.prototype.concat.apply([], this);
+    }
+});
+
+Math.trunc = function (v) (v = +v, (v - v % 1) || (!isFinite(v) || v === 0 ? v : v < 0 ? -0 : 0));
+
+Math.toRadians = function (degrees) degrees * 0.01745329252;
+
+Math.toDegrees = function (radians) radians * 57.29577951308;
+
+/*----------------*/
+/* Java importing */
+/*----------------*/
+
+//net.minecraft.block.*
+["Block","BlockAir","BlockAnvil","BlockBanner","BlockBarrier","BlockBasePressurePlate","BlockBeacon","BlockBed","BlockBookshelf","BlockBreakable","BlockBrewingStand","BlockBush","BlockButton","BlockButtonStone","BlockButtonWood","BlockCactus","BlockCake","BlockCarpet","BlockCarrot","BlockCauldron","BlockChest","BlockClay","BlockCocoa","BlockColored","BlockCommandBlock","BlockCompressedPowered","BlockContainer","BlockCrops","BlockDaylightDetector","BlockDeadBush","BlockDirectional","BlockDirt","BlockDispenser","BlockDoor","BlockDoublePlant","BlockDoubleStoneSlab","BlockDoubleStoneSlabNew","BlockDoubleWoodSlab","BlockDragonEgg","BlockDropper","BlockDynamicLiquid","BlockEnchantmentTable","BlockEnderChest","BlockEndPortal","BlockEndPortalFrame","BlockEventData","BlockFalling","BlockFarmland","BlockFence","BlockFenceGate","BlockFire","BlockFlower","BlockFlowerPot","BlockFurnace","BlockGlass","BlockGlowstone","BlockGrass","BlockGravel","BlockHalfStoneSlab","BlockHalfStoneSlabNew","BlockHalfWoodSlab","BlockHardenedClay","BlockHay","BlockHopper","BlockHugeMushroom","BlockIce","BlockJukebox","BlockLadder","BlockLeaves","BlockLeavesBase","BlockLever","BlockLilyPad","BlockLiquid","BlockLog","BlockMelon","BlockMobSpawner","BlockMushroom","BlockMycelium","BlockNetherBrick","BlockNetherrack","BlockNetherWart","BlockNewLeaf","BlockNewLog","BlockNote","BlockObsidian","BlockOldLeaf","BlockOldLog","BlockOre","BlockPackedIce","BlockPane","BlockPistonBase","BlockPistonExtension","BlockPistonMoving","BlockPlanks","BlockPortal","BlockPotato","BlockPressurePlate","BlockPressurePlateWeighted","BlockPrismarine","BlockPumpkin","BlockQuartz","BlockRail","BlockRailBase","BlockRailDetector","BlockRailPowered","BlockRedFlower","BlockRedSandstone","BlockRedstoneComparator","BlockRedstoneDiode","BlockRedstoneLight","BlockRedstoneOre","BlockRedstoneRepeater","BlockRedstoneTorch","BlockRedstoneWire","BlockReed","BlockRotatedPillar","BlockSand","BlockSandStone","BlockSapling","BlockSeaLantern","BlockSign","BlockSilverfish","BlockSkull","BlockSlab","BlockSlime","BlockSnow","BlockSnowBlock","BlockSoulSand","BlockSourceImpl","BlockSponge","BlockStainedGlass","BlockStainedGlassPane","BlockStairs","BlockStandingSign","BlockStaticLiquid","BlockStem","BlockStone","BlockStoneBrick","BlockStoneSlab","BlockStoneSlabNew","BlockTallGrass","BlockTNT","BlockTorch","BlockTrapDoor","BlockTripWire","BlockTripWireHook","BlockVine","BlockWall","BlockWallSign","BlockWeb","BlockWoodSlab","BlockWorkbench","BlockYellowFlower","IGrowable","ITileEntityProvider","material.MapColor","material.Material","material.MaterialLiquid","material.MaterialLogic","material.MaterialPortal","material.MaterialTransparent","properties.IProperty","properties.PropertyBool","properties.PropertyDirection","properties.PropertyEnum","properties.PropertyHelper","properties.PropertyInteger","state.BlockPistonStructureHelper","state.BlockState","state.BlockStateBase","state.BlockWorldState","state.IBlockState","state.pattern.BlockHelper","state.pattern.BlockPattern","state.pattern.BlockStateHelper","state.pattern.FactoryBlockPattern"].forEach(function (v) {eval(v.split(".").pop() + "=Java.type(\"net.minecraft.block." + v + "\")")});
+
+//net.minecraft.client.gui.*
+["achievement.GuiAchievement","achievement.GuiAchievements","achievement.GuiStats","inventory.CreativeCrafting","inventory.GuiBeacon","inventory.GuiBrewingStand","inventory.GuiChest","inventory.GuiContainer","inventory.GuiContainerCreative","inventory.GuiCrafting","inventory.GuiDispenser","inventory.GuiEditSign","inventory.GuiFurnace","inventory.GuiInventory","inventory.GuiScreenHorseInventory","spectator.BaseSpectatorGroup","spectator.ISpectatorMenuObject","spectator.ISpectatorMenuRecipient","spectator.ISpectatorMenuView","spectator.PlayerMenuObject","spectator.SpectatorMenu","spectator.categories.SpectatorDetails","spectator.categories.TeleportToPlayer","spectator.categories.TeleportToTeam","stream.GuiIngestServers","stream.GuiStreamOptions","stream.GuiStreamUnavailable","stream.GuiTwitchUserMode","ChatLine","FontRenderer","Gui","GuiButton","GuiButtonLanguage","GuiButtonRealmsProxy","GuiChat","GuiClickableScrolledSelectionListProxy","GuiCommandBlock","GuiConfirmOpenLink","GuiControls","GuiCreateFlatWorld","GuiCreateWorld","GuiCustomizeSkin","GuiCustomizeWorldScreen","GuiDisconnected","GuiDownloadTerrain","GuiEnchantment","GuiErrorScreen","GuiFlatPresets","GuiGameOver","GuiHopper","GuiIngame","GuiIngameMenu","GuiKeyBindingList","GuiLabel","GuiLanguage","GuiListButton","GuiListExtended","GuiLockIconButton","GuiMainMenu","GuiMemoryErrorScreen","GuiMerchant","GuiMultiplayer","GuiNewChat","GuiOptionButton","GuiOptions","GuiOptionSlider","GuiOptionsRowList","GuiOverlayDebug","GuiPageButtonList","GuiPlayerTabOverlay","GuiRenameWorld","GuiRepair","GuiResourcePackAvailable","GuiResourcePackList","GuiResourcePackSelected","GuiScreen","GuiScreenAddServer","GuiScreenBook","GuiScreenCustomizePresets","GuiScreenDemo","GuiScreenOptionsSounds","GuiScreenRealmsProxy","GuiScreenResourcePacks","GuiScreenServerList","GuiScreenWorking","GuiSelectWorld","GuiShareToLan","GuiSimpleScrolledSelectionListProxy","GuiSleepMP","GuiSlider","GuiSlot","GuiSlotRealmsProxy","GuiSnooper","GuiSpectator","GuiStreamIndicator","GuiTextField","GuiUtilRenderComponents","GuiVideoSettings","GuiWinGame","GuiYesNo","MapItemRenderer","ScaledResolution","ScreenChatOptions","ServerListEntryLanDetected","ServerListEntryLanScan","ServerListEntryNormal","ServerSelectionList"].forEach(function (v) {eval(v.split(".").pop() + "=Java.type(\"net.minecraft.client.gui." + v + "\")")});
+
+//net.minecraft.client.renderer.*
+["ActiveRenderInfo","BlockFluidRenderer","BlockModelRenderer","BlockModelShapes","BlockRendererDispatcher","ChestRenderer","ChunkRenderContainer","DestroyBlockProgress","EntityRenderer","EnumFaceDirection","GLAllocation","GlStateManager","IImageBuffer","ImageBufferDownload","InventoryEffectRenderer","ItemMeshDefinition","ItemModelMesher","ItemRenderer","OpenGlHelper","RegionRenderCache","RegionRenderCacheBuilder","RenderGlobal","RenderHelper","RenderList","StitcherException","Tessellator","ThreadDownloadImageData","VboRenderList","VertexBufferUploader","ViewFrustum","WorldRenderer","WorldVertexBufferUploader","block.model.BakedQuad","block.model.BlockFaceUV","block.model.BlockPart","block.model.BlockPartFace","block.model.BlockPartRotation","block.model.BreakingFour","block.model.FaceBakery","block.model.ItemCameraTransforms","block.model.ItemModelGenerator","block.model.ItemTransformVec3f","block.model.ModelBlock","block.model.ModelBlockDefinition","block.statemap.BlockStateMapper","block.statemap.DefaultStateMapper","block.statemap.IStateMapper","block.statemap.StateMap","block.statemap.StateMapperBase","chunk.ChunkCompileTaskGenerator","chunk.ChunkRenderDispatcher","chunk.ChunkRenderWorker","chunk.CompiledChunk","chunk.IRenderChunkFactory","chunk.ListChunkFactory","chunk.ListedRenderChunk","chunk.RenderChunk","chunk.SetVisibility","chunk.VboChunkFactory","chunk.VisGraph","culling.ClippingHelper","culling.ClippingHelperImpl","culling.Frustum","culling.ICamera","entity.ArmorStandRenderer","entity.Render","entity.RenderArrow","entity.RenderBat","entity.RenderBiped","entity.RenderBlaze","entity.RenderBoat","entity.RenderCaveSpider","entity.RenderChicken","entity.RenderCow","entity.RenderCreeper","entity.RenderDragon","entity.RenderEnderman","entity.RenderEndermite","entity.RenderEntity","entity.RenderEntityItem","entity.RendererLivingEntity","entity.RenderFallingBlock","entity.RenderFireball","entity.RenderFish","entity.RenderGhast","entity.RenderGiantZombie","entity.RenderGuardian","entity.RenderHorse","entity.RenderIronGolem","entity.RenderItem","entity.RenderLeashKnot","entity.RenderLightningBolt","entity.RenderLiving","entity.RenderMagmaCube","entity.RenderManager","entity.RenderMinecart","entity.RenderMinecartMobSpawner","entity.RenderMooshroom","entity.RenderOcelot","entity.RenderPainting","entity.RenderPig","entity.RenderPigZombie","entity.RenderPlayer","entity.RenderPotion","entity.RenderRabbit","entity.RenderSheep","entity.RenderSilverfish","entity.RenderSkeleton","entity.RenderSlime","entity.RenderSnowball","entity.RenderSnowMan","entity.RenderSpider","entity.RenderSquid","entity.RenderTntMinecart","entity.RenderTNTPrimed","entity.RenderVillager","entity.RenderWitch","entity.RenderWither","entity.RenderWolf","entity.RenderXPOrb","entity.RenderZombie","entity.layers.LayerArmorBase","entity.layers.LayerArrow","entity.layers.LayerBipedArmor","entity.layers.LayerCape","entity.layers.LayerCreeperCharge","entity.layers.LayerCustomHead","entity.layers.LayerDeadmau5Head","entity.layers.LayerEnderDragonDeath","entity.layers.LayerEnderDragonEyes","entity.layers.LayerEndermanEyes","entity.layers.LayerHeldBlock","entity.layers.LayerHeldItem","entity.layers.LayerHeldItemWitch","entity.layers.LayerIronGolemFlower","entity.layers.LayerMooshroomMushroom","entity.layers.LayerRenderer","entity.layers.LayerSaddle","entity.layers.LayerSheepWool","entity.layers.LayerSlimeGel","entity.layers.LayerSnowmanHead","entity.layers.LayerSpiderEyes","entity.layers.LayerVillagerArmor","entity.layers.LayerWitherAura","entity.layers.LayerWolfCollar","texture.AbstractTexture","texture.DynamicTexture","texture.IIconCreator","texture.ITextureObject","texture.ITickable","texture.ITickableTextureObject","texture.LayeredColorMaskTexture","texture.LayeredTexture","texture.SimpleTexture","texture.Stitcher","texture.TextureAtlasSprite","texture.TextureClock","texture.TextureCompass","texture.TextureManager","texture.TextureMap","texture.TextureUtil","tileentity.RenderEnderCrystal","tileentity.RenderItemFrame","tileentity.RenderWitherSkull","tileentity.TileEntityBannerRenderer","tileentity.TileEntityBeaconRenderer","tileentity.TileEntityChestRenderer","tileentity.TileEntityEnchantmentTableRenderer","tileentity.TileEntityEnderChestRenderer","tileentity.TileEntityEndPortalRenderer","tileentity.TileEntityItemStackRenderer","tileentity.TileEntityMobSpawnerRenderer","tileentity.TileEntityPistonRenderer","tileentity.TileEntityRendererDispatcher","tileentity.TileEntitySignRenderer","tileentity.TileEntitySkullRenderer","tileentity.TileEntitySpecialRenderer","vertex.DefaultVertexFormats","vertex.VertexBuffer","vertex.VertexFormat","vertex.VertexFormatElement"].forEach(function (v) {eval(v.split(".").pop() + "=Java.type(\"net.minecraft.client.renderer." + v + "\")")}); 
+
+//net.minecraft.entity.*
+["DataWatcher","Entity","EntityAgeable","EntityBodyHelper","EntityCreature","EntityFlying","EntityHanging","EntityLeashKnot","EntityList","EntityLiving","EntityLivingBase","EntityMinecartCommandBlock","EntitySpawnPlacementRegistry","EntityTracker","EntityTrackerEntry","EnumCreatureAttribute","EnumCreatureType","IEntityLivingData","IEntityMultiPart","IEntityOwnable","IMerchant","INpc","IProjectile","IRangedAttackMob","NpcMerchant","SharedMonsterAttributes","ai.EntityAIArrowAttack","ai.EntityAIAttackOnCollide","ai.EntityAIAvoidEntity","ai.EntityAIBase","ai.EntityAIBeg","ai.EntityAIBreakDoor","ai.EntityAIControlledByPlayer","ai.EntityAICreeperSwell","ai.EntityAIDefendVillage","ai.EntityAIDoorInteract","ai.EntityAIEatGrass","ai.EntityAIFindEntityNearest","ai.EntityAIFindEntityNearestPlayer","ai.EntityAIFleeSun","ai.EntityAIFollowGolem","ai.EntityAIFollowOwner","ai.EntityAIFollowParent","ai.EntityAIHarvestFarmland","ai.EntityAIHurtByTarget","ai.EntityAILeapAtTarget","ai.EntityAILookAtTradePlayer","ai.EntityAILookAtVillager","ai.EntityAILookIdle","ai.EntityAIMate","ai.EntityAIMoveIndoors","ai.EntityAIMoveThroughVillage","ai.EntityAIMoveToBlock","ai.EntityAIMoveTowardsRestriction","ai.EntityAIMoveTowardsTarget","ai.EntityAINearestAttackableTarget","ai.EntityAIOcelotAttack","ai.EntityAIOcelotSit","ai.EntityAIOpenDoor","ai.EntityAIOwnerHurtByTarget","ai.EntityAIOwnerHurtTarget","ai.EntityAIPanic","ai.EntityAIPlay","ai.EntityAIRestrictOpenDoor","ai.EntityAIRestrictSun","ai.EntityAIRunAroundLikeCrazy","ai.EntityAISit","ai.EntityAISwimming","ai.EntityAITarget","ai.EntityAITargetNonTamed","ai.EntityAITasks","ai.EntityAITempt","ai.EntityAITradePlayer","ai.EntityAIVillagerInteract","ai.EntityAIVillagerMate","ai.EntityAIWander","ai.EntityAIWatchClosest","ai.EntityAIWatchClosest2","ai.EntityJumpHelper","ai.EntityLookHelper","ai.EntityMinecartMobSpawner","ai.EntityMoveHelper","ai.EntitySenses","ai.RandomPositionGenerator","ai.attributes.AttributeModifier","ai.attributes.BaseAttribute","ai.attributes.BaseAttributeMap","ai.attributes.IAttribute","ai.attributes.IAttributeInstance","ai.attributes.ModifiableAttributeInstance","ai.attributes.RangedAttribute","ai.attributes.ServersideAttributeMap","boss.BossStatus","boss.EntityDragon","boss.EntityDragonPart","boss.EntityWither","boss.IBossDisplayData","effect.EntityLightningBolt","effect.EntityWeatherEffect","item.EntityArmorStand","item.EntityBoat","item.EntityEnderCrystal","item.EntityEnderEye","item.EntityEnderPearl","item.EntityExpBottle","item.EntityFallingBlock","item.EntityFireworkRocket","item.EntityItem","item.EntityItemFrame","item.EntityMinecart","item.EntityMinecartChest","item.EntityMinecartContainer","item.EntityMinecartEmpty","item.EntityMinecartFurnace","item.EntityMinecartHopper","item.EntityMinecartTNT","item.EntityPainting","item.EntityTNTPrimed","item.EntityXPOrb","monster.EntityBlaze","monster.EntityCaveSpider","monster.EntityCreeper","monster.EntityEnderman","monster.EntityEndermite","monster.EntityGhast","monster.EntityGiantZombie","monster.EntityGolem","monster.EntityGuardian","monster.EntityIronGolem","monster.EntityMagmaCube","monster.EntityMob","monster.EntityPigZombie","monster.EntitySilverfish","monster.EntitySkeleton","monster.EntitySlime","monster.EntitySnowman","monster.EntitySpider","monster.EntityWitch","monster.EntityZombie","monster.IMob","passive.EntityAmbientCreature","passive.EntityAnimal","passive.EntityBat","passive.EntityChicken","passive.EntityCow","passive.EntityHorse","passive.EntityMooshroom","passive.EntityOcelot","passive.EntityPig","passive.EntityRabbit","passive.EntitySheep","passive.EntitySquid","passive.EntityTameable","passive.EntityVillager","passive.EntityWaterMob","passive.EntityWolf","passive.IAnimals","player.EntityPlayer","player.EntityPlayerMP","player.EnumPlayerModelParts","player.InventoryPlayer","player.PlayerCapabilities","projectile.EntityArrow","projectile.EntityEgg","projectile.EntityFireball","projectile.EntityFishHook","projectile.EntityLargeFireball","projectile.EntityPotion","projectile.EntitySmallFireball","projectile.EntitySnowball","projectile.EntityThrowable","projectile.EntityWitherSkull"].forEach(function (v) {eval(v.split(".").pop() + "=Java.type(\"net.minecraft.entity." + v + "\")")});
+
+//net.minecraft.init.*
+["Blocks","Bootstrap","Items"].forEach(function (v) {eval(v + "=Java.type(\"net.minecraft.init." + v + "\")")});
+
+//net.minecraft.item.*
+["EnumAction","EnumDyeColor","EnumRarity","Item","ItemAnvilBlock","ItemAppleGold","ItemArmor","ItemArmorStand","ItemAxe","ItemBanner","ItemBed","ItemBlock","ItemBoat","ItemBook","ItemBow","ItemBucket","ItemBucketMilk","ItemCarrotOnAStick","ItemCloth","ItemCoal","ItemColored","ItemDoor","ItemDoublePlant","ItemDye","ItemEditableBook","ItemEgg","ItemEmptyMap","ItemEnchantedBook","ItemEnderEye","ItemEnderPearl","ItemExpBottle","ItemFireball","ItemFirework","ItemFireworkCharge","ItemFishFood","ItemFishingRod","ItemFlintAndSteel","ItemFood","ItemGlassBottle","ItemHangingEntity","ItemHoe","ItemLead","ItemLeaves","ItemLilyPad","ItemMap","ItemMapBase","ItemMinecart","ItemMonsterPlacer","ItemMultiTexture","ItemNameTag","ItemPickaxe","ItemPiston","ItemPotion","ItemRecord","ItemRedstone","ItemReed","ItemSaddle","ItemSeedFood","ItemSeeds","ItemShears","ItemSign","ItemSimpleFoiled","ItemSkull","ItemSlab","ItemSnow","ItemSnowball","ItemSoup","ItemSpade","ItemStack","ItemSword","ItemTool","ItemWritableBook","crafting.CraftingManager","crafting.FurnaceRecipes","crafting.IRecipe","crafting.RecipeBookCloning","crafting.RecipeFireworks","crafting.RecipeRepairItem","crafting.RecipesArmor","crafting.RecipesArmorDyes","crafting.RecipesBanners","crafting.RecipesCrafting","crafting.RecipesDyes","crafting.RecipesFood","crafting.RecipesIngots","crafting.RecipesMapCloning","crafting.RecipesMapExtending","crafting.RecipesTools","crafting.RecipesWeapons","crafting.ShapedRecipes","crafting.ShapelessRecipes"].forEach(function (v) {eval(v.split(".").pop() + "=Java.type(\"net.minecraft.item." + v + "\")")});
+
+//net.minecraft.network.*
+["EnumConnectionState","EnumPacketDirection","INetHandler","NetHandlerPlayServer","NettyCompressionDecoder","NettyCompressionEncoder","NettyEncryptingDecoder","NettyEncryptingEncoder","NettyEncryptionTranslator","NetworkManager","NetworkSystem","Packet","PacketBuffer","PacketThreadUtil","PingResponseHandler","ServerStatusResponse","ThreadQuickExitException","handshake.INetHandlerHandshakeServer","handshake.client.C00Handshake","login.INetHandlerLoginClient","login.INetHandlerLoginServer","login.client.C00PacketLoginStart","login.client.C01PacketEncryptionResponse","login.server.S00PacketDisconnect","login.server.S01PacketEncryptionRequest","login.server.S02PacketLoginSuccess","login.server.S03PacketEnableCompression","play.INetHandlerPlayClient","play.INetHandlerPlayServer","play.client.C00PacketKeepAlive","play.client.C01PacketChatMessage","play.client.C02PacketUseEntity","play.client.C03PacketPlayer","play.client.C03PacketPlayer.C04PacketPlayerPosition","play.client.C03PacketPlayer.C05PacketPlayerLook","play.client.C03PacketPlayer.C06PacketPlayerPosLook","play.client.C07PacketPlayerDigging","play.client.C08PacketPlayerBlockPlacement","play.client.C09PacketHeldItemChange","play.client.C0APacketAnimation","play.client.C0BPacketEntityAction","play.client.C0CPacketInput","play.client.C0DPacketCloseWindow","play.client.C0EPacketClickWindow","play.client.C0FPacketConfirmTransaction","play.client.C10PacketCreativeInventoryAction","play.client.C11PacketEnchantItem","play.client.C12PacketUpdateSign","play.client.C13PacketPlayerAbilities","play.client.C14PacketTabComplete","play.client.C15PacketClientSettings","play.client.C16PacketClientStatus","play.client.C17PacketCustomPayload","play.client.C18PacketSpectate","play.client.C19PacketResourcePackStatus","play.server.S00PacketKeepAlive","play.server.S01PacketJoinGame","play.server.S02PacketChat","play.server.S03PacketTimeUpdate","play.server.S04PacketEntityEquipment","play.server.S05PacketSpawnPosition","play.server.S06PacketUpdateHealth","play.server.S07PacketRespawn","play.server.S08PacketPlayerPosLook","play.server.S09PacketHeldItemChange","play.server.S0APacketUseBed","play.server.S0BPacketAnimation","play.server.S0CPacketSpawnPlayer","play.server.S0DPacketCollectItem","play.server.S0EPacketSpawnObject","play.server.S0FPacketSpawnMob","play.server.S10PacketSpawnPainting","play.server.S11PacketSpawnExperienceOrb","play.server.S12PacketEntityVelocity","play.server.S13PacketDestroyEntities","play.server.S14PacketEntity","play.server.S18PacketEntityTeleport","play.server.S19PacketEntityHeadLook","play.server.S19PacketEntityStatus","play.server.S1BPacketEntityAttach","play.server.S1CPacketEntityMetadata","play.server.S1DPacketEntityEffect","play.server.S1EPacketRemoveEntityEffect","play.server.S1FPacketSetExperience","play.server.S20PacketEntityProperties","play.server.S21PacketChunkData","play.server.S22PacketMultiBlockChange","play.server.S23PacketBlockChange","play.server.S24PacketBlockAction","play.server.S25PacketBlockBreakAnim","play.server.S26PacketMapChunkBulk","play.server.S27PacketExplosion","play.server.S28PacketEffect","play.server.S29PacketSoundEffect","play.server.S2APacketParticles","play.server.S2BPacketChangeGameState","play.server.S2CPacketSpawnGlobalEntity","play.server.S2DPacketOpenWindow","play.server.S2EPacketCloseWindow","play.server.S2FPacketSetSlot","play.server.S30PacketWindowItems","play.server.S31PacketWindowProperty","play.server.S32PacketConfirmTransaction","play.server.S33PacketUpdateSign","play.server.S34PacketMaps","play.server.S35PacketUpdateTileEntity","play.server.S36PacketSignEditorOpen","play.server.S37PacketStatistics","play.server.S38PacketPlayerListItem","play.server.S39PacketPlayerAbilities","play.server.S3APacketTabComplete","play.server.S3BPacketScoreboardObjective","play.server.S3CPacketUpdateScore","play.server.S3DPacketDisplayScoreboard","play.server.S3EPacketTeams","play.server.S3FPacketCustomPayload","play.server.S40PacketDisconnect","play.server.S41PacketServerDifficulty","play.server.S42PacketCombatEvent","play.server.S43PacketCamera","play.server.S44PacketWorldBorder","play.server.S45PacketTitle","play.server.S46PacketSetCompressionLevel","play.server.S47PacketPlayerListHeaderFooter","play.server.S48PacketResourcePackSend","play.server.S49PacketUpdateEntityNBT","rcon.RConConsoleSource","status.INetHandlerStatusClient","status.INetHandlerStatusServer","status.client.C00PacketServerQuery","status.client.C01PacketPing","status.server.S00PacketServerInfo","status.server.S01PacketPong"].forEach(function (v) {eval(v.split(".").pop() + "=Java.type(\"net.minecraft.network." + v + "\")")});
+
+//net.minecraft.util.*
+["AxisAlignedBB","BlockPos","Cartesian","ChatAllowedCharacters","ChatComponentProcessor","ChatComponentScore","ChatComponentSelector","ChatComponentStyle","ChatComponentText","ChatComponentTranslation","ChatComponentTranslationFormatException","ChatStyle","ClassInheritanceMultiMap","CombatEntry","CombatTracker","CryptManager","DamageSource","EnchantmentNameParts","EntityDamageSource","EntityDamageSourceIndirect","EntitySelectors","EnumChatFormatting","EnumFacing","EnumParticleTypes","EnumTypeAdapterFactory","EnumWorldBlockLayer","FoodStats","FrameTimer","HttpUtil","IChatComponent","IJsonSerializable","IntegerCache","IntHashMap","IObjectIntIterable","IProgressUpdate","IRegistry","IStringSerializable","IThreadListener","ITickable","JsonSerializableSet","JsonUtils","LazyLoadBase","LoggingPrintStream","LongHashMap","MapPopulator","MathHelper","Matrix4f","MessageDeserializer","MessageDeserializer2","MessageSerializer","MessageSerializer2","MinecraftError","MouseFilter","MouseHelper","MovementInput","MovementInputFromOptions","MovingObjectPosition","ObjectIntIdentityMap","RegistryDefaulted","RegistryNamespaced","RegistryNamespacedDefaultedByKey","RegistrySimple","ReportedException","ResourceLocation","Rotations","ScreenShotHelper","Session","StatCollector","StringTranslate","StringUtils","ThreadSafeBoundList","Timer","Tuple","TupleIntJsonSerializable","Util","Vec3","Vec3i","Vec4b","Vector3d","WeightedRandom","WeightedRandomChestContent","WeightedRandomFishable"].forEach(function (v) {eval(v + "=Java.type(\"net.minecraft.util." + v + "\")")});
+
+//net.ccbluex.liquidbounce.utils.*
+["CPSCounter","ClassUtils","ClientUtils","EntityUtils","InventoryUtils","MinecraftInstance","MovementUtils","PathUtils","RaycastUtils","RollingArrayLongBuffer","Rotation","RotationUtils","ServerUtils","SettingsUtils","TabUtils","block.BlockUtils","block.PlaceInfo","extensions.BlockExtensionKt","extensions.PlayerExtensionKt","item.ArmorComparator","item.ArmorPiece","item.ItemUtils","login.LoginUtils","login.MinecraftAccount","login.UserUtils","misc.FallingPlayer","misc.HttpUtils","misc.MiscUtils","misc.RandomUtils","misc.StringUtils","render.AnimationUtils","render.ColorUtils","render.IconUtils","render.ParticleUtils","render.RenderUtils","render.shader.FramebufferShader","render.shader.Shader","render.shader.shaders.BackgroundShader","render.shader.shaders.GlowShader","render.shader.shaders.OutlineShader","timer.MSTimer","timer.TickTimer","timer.TimeUtils"].forEach(function (v) {eval(v.split(".").pop() + "=Java.type(\"net.ccbluex.liquidbounce.utils." + v + "\")")});
+
+//net.ccbluex.liquidbounce.value.*
+["BlockValue","BoolValue","FloatValue","FontValue","IntegerValue","ListValue","TextValue","Value"].forEach(function (v) {eval(v + "=Java.type(\"net.ccbluex.liquidbounce.value." + v + "\")")});
+
+//Additional events from net.ccbluex.liquidbounce.event
+["BlockBBEvent","ClickWindowEvent","ClientShutdownEvent","EntityMovementEvent","PushOutEvent","RenderEntityEvent","ScreenEvent","TextEvent","TickEvent","EventHook","EventTarget","Listenable"].forEach(function (v) {eval(v + "=Java.type(\"net.ccbluex.liquidbounce.event." + v + "\")")});
+
+//Used variables
+LiquidBounce = Java.type("net.ccbluex.liquidbounce.LiquidBounce"); Keyboard = Java.type("org.lwjgl.input.Keyboard"); Timer = Java.type("java.util.Timer"); List = Java.type("java.util.List"); ScriptModule = Java.type("net.ccbluex.liquidbounce.script.api.ScriptModule"); LinkedHashMap = Java.type("java.util.LinkedHashMap"); Constructor = Java.type("java.lang.reflect.Constructor"); Modifier = Java.type("java.lang.reflect.Modifier"); Field = Java.type("java.lang.reflect.Field"); ModuleCategory = Java.type("net.ccbluex.liquidbounce.features.module.ModuleCategory"); Script = Java.type("net.ccbluex.liquidbounce.script.Script"); File = Java.type("java.io.File"); URL = Java.type("java.net.URL"); JOptionPane = Java.type("javax.swing.JOptionPane"); FileUtils = Java.type("org.apache.commons.io.FileUtils"); Desktop = Java.type("java.awt.Desktop").getDesktop(); ClickGui = Java.type("net.ccbluex.liquidbounce.ui.client.clickgui.ClickGui"); Enchantment = Java.type("net.minecraft.enchantment.Enchantment"); ClassLoader = Java.type("java.lang.ClassLoader"); Thread = Java.type("java.lang.Thread"); Class = Java.type("java.lang.Class"); PositionedSoundRecord = Java.type("net.minecraft.client.audio.PositionedSoundRecord"); Remapper = Java.type("net.ccbluex.liquidbounce.script.remapper.Remapper"); Consumer = Java.type("java.util.function.Consumer"); ArrayList = Java.type("java.util.ArrayList"); Module = Java.type("net.ccbluex.liquidbounce.features.module.Module");
+Core.classes = Java.from(getField(ClassLoader, "classes").get(Thread.currentThread().getContextClassLoader())); StaticClass = getMethod(_class = Class.forName("jdk.internal.dynalink.beans.StaticClass"), "forClass").invoke(null, _class); delete _class;
+_registeredModulesField = getField(Script, "registeredModules"); _callEventMethod = getMethod(ScriptModule, "callEvent"); _flushOutboundQueueMethod = getMethod(NetworkManager, "func_150733_h"); _dispatchPacketMethod = getMethod(NetworkManager, "func_150732_b"); _readWriteLockField = getField(NetworkManager, "field_181680_j"); _outboundPacketsQueueField = getField(NetworkManager, "field_150745_j"); _remapperFields = getField(Remapper, "fields").get(Remapper); _remapperMethods = getField(Remapper, "methods").get(Remapper);
+
+/*---------------*/
+/* Updating core */
+/*---------------*/
+
+
+Core.runUpdater = function () {
+    (Core.logFile = new File("logs/core.log")).deleteOnExit();
+    Core.log = Core.logFile.exists() ? JSON.parse(FileUtils.readFileToString(Core.logFile)) : {};
+
+    Core.updateClickGui = function () {
+        LiquidBounce.clickGui = new (Java.extend(ClickGui))() {
+            func_73866_w_: function () {
+                callEvent("clickGuiOpen");
+            },
+            func_146281_b: function () {
+                callEvent("clickGuiClosed");
+                LiquidBounce.fileManager.saveConfig(LiquidBounce.fileManager.clickGuiConfig);
+            }
+        }
+        LiquidBounce.fileManager.loadConfig(LiquidBounce.fileManager.clickGuiConfig);
+        callEvent("clickGuiLoaded");
+    };
+
+    var scriptCache, responseCache, charset = Java.type("java.nio.charset.Charset").forName("UTF-8");
+
+    if (!Core.log.Core) {
+        try {
+            if ((responseCache = (scriptCache = HttpUtils.get("https://raw.githubusercontent.com/CzechHek/Core/master/Core.lib")).match(/version: "(.+)"/)[1]) != Core.version) {
+                FileUtils.writeStringToFile(new File(LiquidBounce.fileManager.dir, "scripts/Core.lib"), scriptCache, charset);
+                var changelog = JSON.parse(HttpUtils.get("https://api.github.com/repos/CzechHek/Core/commits?path=Core.lib"))[0].commit.message;
+                showMessage("Automatically updated Core " + Core.version + " to " + responseCache + (changelog ? "\nChangelog:\n" + changelog : ""), "Core Updater");
+                Core.shouldReload = true;
+            }
+            Core.log.Core = true;
+        } catch (e) {
+            print("Couldn't check Core for updates! Error:", e);
+            Core.log.Core = e.toString();
+        }
+    }
+
+    if ((Core.updateURL || Core.updateURL === undefined) && !Core.log[script.scriptName]) {
+        try {
+            if ((responseCache = (scriptCache = HttpUtils.get(Core.updateURL || "https://raw.githubusercontent.com/CzechHek/Core/master/Scripts/" + script.scriptName + ".js")).match(/version"?\s*:\s*"?([^"]+)"?[\n\s,}]/)[1]) != script.scriptVersion) {
+                FileUtils.writeStringToFile(script.getScriptFile(), scriptCache, charset);
+                var changelog = Core.updateURL ? "" : JSON.parse(HttpUtils.get("https://api.github.com/repos/CzechHek/Core/commits?path=Scripts/" + script.scriptName + ".js"))[0].commit.message;
+                showMessage("Automatically updated " + script.scriptName + " " + script.scriptVersion + " to " + responseCache + (changelog ? "\nChangelog:\n" + changelog : ""), "Core Updater");
+                Core.shouldReload = true;
+            }
+            Core.log[script.scriptName] = true;
+        } catch (e) {
+            print("Couldn't check", script.scriptName, "for updates! Error:", e);
+            Core.log[script.scriptName] = e.toString();
+        }
+    }
+
+    if (!Core.shouldReload && !Core.log.clickGuiHook) {
+        Core.log.clickGuiHook = script.scriptName;
+        LiquidBounce.clickGui = null;
+        var timer = interval(250, function () {
+            if (LiquidBounce.clickGui) {
+                Core.updateClickGui();
+                timer.cancel();
+            }
+        });
+    }
+
+    FileUtils.writeStringToFile(Core.logFile, JSON.stringify(Core.log));
+}
+
+/*-------------------*/
+/* Module management */
+/*-------------------*/
+
+script.on("load", function () {
+    module = toArray(module || {}); command = toArray(command || {});
+
+    if (!Core.API_V2) {
+        script.scriptName = (script.scriptName === "Legacy Script" ? scriptName || module[0].name || command[0].name || (command[0].aliases && command[0].aliases[0]) || "Script" : script.scriptName).toString();
+        script.scriptAuthors = script.scriptAuthors[0] === "Please Update Script" ? toArray((scriptAuthor || module[0].author || command[0].author || "Author").toString()) : script.scriptAuthors;
+        script.scriptVersion = (script.scriptVersion === "1.0.0" ? scriptVersion || module[0].version || command[0].version || "1.0.0" : script.scriptVersion).toString();
+    }
+
+    Core.runUpdater();
+
+    if (Core.shouldReload) {
+        script.on("enable", function () timeout(1000, function () scriptManager.scripts.remove(script))); //Prevents ConcurrentModificationException if a script gets updated after reloading scripts.
+        scriptManager.scripts.add(new Script(script.getScriptFile()));
+        return
+    }
+
+    Core.categories = new EditableEnum(ModuleCategory);
+    Core.eventManager = new Reflector(LiquidBounce.eventManager);
+    Core.defaultAnnotation = getMethod(moduleManager, "onKey").getAnnotation(EventTarget.class);
+    Core.artificialEvents = {
+        onBlockBB: BlockBBEvent,
+        onClientShutdown: ClientShutdownEvent,
+        onEntityMovement: EntityMovementEvent,
+        onPushOut: PushOutEvent,
+        onRenderEntity: RenderEntityEvent,
+        onScreen: ScreenEvent,
+        onText: TextEvent,
+        onTick: TickEvent
+    };
+    
+    [module, command].forEach(function (c, i) c.forEach(function (v) [registerModule, registerCommand][i](v)));
+
+    script.on("enable", function () {
+        var validChars = /[a-zA-Z_$][0-9a-zA-Z_$]*/
+        for each (var m in moduleManager.modules) m.name != "Script" && (!(m instanceof ScriptModule) || validChars.exec(m.name) == m.name) && eval(m.name + "Module=m");
+        for each (var c in [module, command]) for each (var v in c) v.onLoad && v.onLoad();
+    });
+
+    script.on("disable", function () {
+        for each (var c in [module, command]) for each (var v in c) v.onUnload && v.onUnload();
+
+        //Unregistering artificial event hooks
+        for each (var m in module) {
+            for each (var key in Object.keys(m)) {
+                var event = Core.artificialEvents[key];
+                if (event) {
+                    var hooks = Core.eventManager.registry.getOrDefault(event.class, new ArrayList());
+                    for each (var hook in hooks.clone()) !(hook.getEventClass() instanceof Module) && hooks.remove(hook);
+                    Core.eventManager.registry[event.class] = hooks;
+                }
+            }
+        }
+
+        if (Core.log.clickGuiHook == script.scriptName) {
+                Core.log = JSON.parse(FileUtils.readFileToString(Core.logFile));
+                delete Core.log.clickGuiHook;
+                FileUtils.writeStringToFile(Core.logFile, JSON.stringify(Core.log));
+            }
+    });
+});
