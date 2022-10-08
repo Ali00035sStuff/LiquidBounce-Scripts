@@ -12,3 +12,5 @@ If a script doesn't work, do not create an issue about it as I'm not the owner o
 All of the scripts in this repository are checked and safe.
 
 The scripts in this repository are compatible with LiquidBounce forks.
+
+## I ain't focusing on this shit too much anymore.
